@@ -1,0 +1,116 @@
+//@version=6
+// ============================================================
+//  FUTUROS ALGO — EMA + RSI + ATR
+//  Estrategia para futuros en TradingView
+//  Entradas: cruce de EMAs con filtro de RSI
+//  Salidas: Stop Loss y Take Profit basados en ATR
+// ============================================================
+strategy("Futuros Algo — EMA + RSI + ATR",
+     shorttitle="FutAlgo",
+     overlay=true,
+     initial_capital=100000,
+     default_qty_type=strategy.fixed,
+     default_qty_value=1,
+     commission_type=strategy.commission.percent,
+     commission_value=0.025,
+     pyramiding=0,
+     calc_on_every_tick=false)
+
+// ===================== INPUTS =====================
+grpTrend   = "📈 Tendencia"
+fastLen    = input.int(9,  "EMA rápida", minval=1, group=grpTrend)
+slowLen    = input.int(21, "EMA lenta",  minval=2, group=grpTrend)
+
+grpRsi       = "🔍 Filtro RSI"
+useRsiFilter = input.bool(true, "Usar filtro RSI", group=grpRsi)
+rsiLen       = input.int(14, "Largo RSI", minval=1, group=grpRsi)
+rsiLongMin   = input.int(50, "RSI mínimo para LONG",  minval=1, maxval=100, group=grpRsi)
+rsiShortMax  = input.int(50, "RSI máximo para SHORT", minval=1, maxval=100, group=grpRsi)
+
+grpRisk    = "🛡️ Riesgo (ATR)"
+atrLen     = input.int(14, "Largo ATR", minval=1, group=grpRisk)
+slMult     = input.float(1.5, "Stop Loss × ATR",   minval=0.1, step=0.1, group=grpRisk)
+tpMult     = input.float(3.0, "Take Profit × ATR", minval=0.1, step=0.1, group=grpRisk)
+useTrailing = input.bool(false, "Usar trailing stop", group=grpRisk)
+trailMult  = input.float(2.0, "Trailing × ATR", minval=0.1, step=0.1, group=grpRisk)
+
+grpSession   = "🕘 Sesión"
+useSession   = input.bool(true, "Operar solo en sesión", group=grpSession)
+sess         = input.session("0930-1600:1234567", "Horario de operación", group=grpSession)
+closeEOD     = input.bool(false, "Cerrar posición al terminar la sesión", group=grpSession)
+
+grpDir     = "↕️ Dirección"
+allowLong  = input.bool(true,  "Permitir LONGS",  group=grpDir)
+allowShort = input.bool(true,  "Permitir SHORTS", group=grpDir)
+contracts  = input.int(1, "Contratos por operación", minval=1, group=grpDir)
+
+// ===================== CÁLCULOS =====================
+emaFast = ta.ema(close, fastLen)
+emaSlow = ta.ema(close, slowLen)
+rsi     = ta.rsi(close, rsiLen)
+atr     = ta.atr(atrLen)
+
+inSession = not useSession or not na(time(timeframe.period, sess))
+
+longCross  = ta.crossover(emaFast, emaSlow)
+shortCross = ta.crossunder(emaFast, emaSlow)
+
+rsiLongOk  = not useRsiFilter or rsi >= rsiLongMin
+rsiShortOk = not useRsiFilter or rsi <= rsiShortMax
+
+longSignal  = longCross  and emaFast > emaSlow and rsiLongOk  and inSession and allowLong
+shortSignal = shortCross and emaFast < emaSlow and rsiShortOk and inSession and allowShort
+
+// ===================== ENTRADAS / SALIDAS =====================
+tickSize = syminfo.mintick
+
+if longSignal
+    strategy.entry("Long", strategy.long, qty=contracts)
+    slPrice = close - atr * slMult
+    tpPrice = close + atr * tpMult
+    if useTrailing
+        trailTicks = math.max(1, math.round(atr * trailMult / tickSize))
+        strategy.exit("Long Exit", from_entry="Long", stop=slPrice, trail_price=tpPrice, trail_offset=trailTicks)
+    else
+        strategy.exit("Long Exit", from_entry="Long", stop=slPrice, limit=tpPrice)
+
+if shortSignal
+    strategy.entry("Short", strategy.short, qty=contracts)
+    slPrice = close + atr * slMult
+    tpPrice = close - atr * tpMult
+    if useTrailing
+        trailTicks = math.max(1, math.round(atr * trailMult / tickSize))
+        strategy.exit("Short Exit", from_entry="Short", stop=slPrice, trail_price=tpPrice, trail_offset=trailTicks)
+    else
+        strategy.exit("Short Exit", from_entry="Short", stop=slPrice, limit=tpPrice)
+
+// Cierre al final de la sesión (solo intradía)
+if closeEOD and useSession and na(time(timeframe.period, sess)) and strategy.position_size != 0
+    strategy.close_all(comment="Fin de sesión")
+
+// ===================== VISUAL =====================
+plot(emaFast, "EMA rápida", color.new(color.teal, 0), 2)
+plot(emaSlow, "EMA lenta",  color.new(color.orange, 0), 2)
+
+plotshape(longSignal,  "Señal Long",  shape.triangleup,   location.belowbar, color.new(color.green, 0), size=size.small)
+plotshape(shortSignal, "Señal Short", shape.triangledown, location.abovebar, color.new(color.red,   0), size=size.small)
+
+// Sombreado fuera de sesión
+bgcolor(useSession and na(time(timeframe.period, sess)) ? color.new(color.gray, 93) : na, title="Fuera de sesión")
+
+// Panel informativo
+var table info = table.new(position.top_right, 2, 4, bgcolor=color.new(color.black, 20))
+if barstate.islast
+    table.cell(info, 0, 0, "RSI",  text_color=color.white)
+    table.cell(info, 1, 0, str.tostring(rsi, "#.#"), text_color=rsi > 70 ? color.red : rsi < 30 ? color.green : color.white)
+    table.cell(info, 0, 1, "ATR",  text_color=color.white)
+    table.cell(info, 1, 1, str.tostring(atr, format.mintick), text_color=color.white)
+    table.cell(info, 0, 2, "Tendencia", text_color=color.white)
+    table.cell(info, 1, 2, emaFast > emaSlow ? "Alcista" : "Bajista", text_color=emaFast > emaSlow ? color.green : color.red)
+    table.cell(info, 0, 3, "Posición", text_color=color.white)
+    posTxt = strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "—"
+    table.cell(info, 1, 3, posTxt, text_color=strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.white)
+
+// ===================== ALERTAS =====================
+alertcondition(longSignal,  title="🟢 Señal LONG",  message="LONG en {{ticker}} ({{interval}}) — Precio: {{close}}")
+alertcondition(shortSignal, title="🔴 Señal SHORT", message="SHORT en {{ticker}} ({{interval}}) — Precio: {{close}}")
